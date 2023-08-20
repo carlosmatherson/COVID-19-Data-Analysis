@@ -1,2 +1,2 @@
 # COVID-19-Data-Analysis
-My COVID-19 data analysis for CU Boulder MSDS course DTSA 5301 - Data Science as a Field.
+Reproducibly importing, tidying, and analyzing the [John Hopkins COVID-19 dataset](https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/).
