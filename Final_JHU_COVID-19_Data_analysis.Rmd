@@ -1,0 +1,147 @@
+---
+title: "JHU COVID-19 Data Analysis"
+author: "Carlos Matherson"
+date: "2023-08-20"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Library 
+Here are the libraries used in this R Markdown.
+```{r library, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+```
+## Import Data
+Here, we import Johns Hopkins COVID 19 data in a reproducible manner. The variable `url_in` is the parent link to the raw data, `file_names` is a list of file names, and `urls` is the vector of complete links to the data. The data is read into the appropriately named variables `US_cases` and `US_deaths`. `UID_lookup` is imported so that we may enjoy the use of population data.
+```{r get_jhu_data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_US.csv", "time_series_covid19_deaths_US.csv")
+UID_lookup <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv")
+
+urls <- str_c(url_in,file_names)
+US_cases <- read.csv(urls[1])
+US_deaths <- read.csv(urls[2])
+```
+
+## Tidy & Transform United States Data
+In this section, date, cases, and deaths are put into their own columns, and Lat and Long are excluded from the data set. The cases and deaths are joined in `US` and the dates are reformatted (they have an 'X' in front that needs to be removed via the substring method). Population data was added, too. Additionally, in this section the US cases and deaths data is summarized, joined together, and grouped by state. Additionally, a new column including the `new_cases` and `new_deaths` totals per day is added to the data frame as well.
+
+```{r tidy_us_data, message=FALSE}
+US_cases <- US_cases %>% pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to ="cases") %>% select(Admin2:cases) %>% mutate(date = mdy(substring(date,2))) %>% select(-c(Lat,Long_))
+
+US_deaths <- US_deaths %>% pivot_longer(cols = -(UID:Population), names_to = "date", values_to ="deaths") %>% select(Admin2:deaths) %>% select(-c(Lat,Long_)) %>% mutate(date = mdy(substring(date,2))) 
+
+US <- US_cases %>% full_join(US_deaths)
+
+US_by_state <- US %>% group_by(Province_State,Country_Region,date) %>% summarize(cases=sum(cases),deaths=sum(deaths),Population=sum(Population)) %>% select(Province_State,Country_Region,date,cases,deaths,Population) %>% ungroup()
+
+US_by_state <- US_by_state %>% mutate(new_cases = cases-lag(cases), new_deaths = deaths-lag(deaths))
+
+US_totals <- US_by_state %>% group_by(Country_Region,date) %>% summarize(cases=sum(cases),deaths=sum(deaths),Population=sum(Population)) %>% ungroup()
+
+US_totals <- US_totals %>% mutate(new_cases = cases-lag(cases), new_deaths = deaths-lag(deaths))
+```
+
+And, again, a summary of the data is shown to check validity.
+```{r summary2}
+summary(US_by_state) 
+```
+## Visualize United States Cases vs Deaths
+Here, a graph of the cases and deaths in the United States is plotted on a log-scale. It seems as though the growth rate for cases and deaths converge to a limit over time.
+```{r visuals_US}
+US_totals %>% filter(cases > 0) %>% ggplot(aes(x=date,y=cases)) + geom_line(aes(color="cases")) + geom_point(aes(color="cases")) + geom_line(aes(y=deaths,color="deaths")) + geom_point(aes(y=deaths,color="deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID19 in US", y=NULL)
+```
+
+## Visualize and Compare State Data: Arizona vs New York 
+Here, the states Arizona and New York are compared side by side in regard to their new cases over the time period of the pandemic. It is evident that New York had a lot more total new cases at the beginning of 2022, and from the looks of it, Arizona stopped reliably recording data around the middle of 2022. There seems to be missing dates in both data sets, which can be attributed to data recording policies or fewer infections.
+```{r visuals_AZvNY_new_cases}
+AZvsNY <- US_by_state %>% filter(Province_State=="Arizona" | Province_State=="New York") %>% filter(cases>0)
+
+ggplot(data=AZvsNY,aes(x=date,y=new_cases)) +
+  geom_bar(stat="identity") +
+  facet_wrap("Province_State") +
+  labs(title="Comparing New Cases in Arizona vs New York")
+```
+
+Here, the states Arizona and New York are compared side by side in regard to their new deaths over the time period of the pandemic. It is evident that New York had a lot more total new deaths towards the middle of 2020. It seems as though the death rate in Arizona was always significantly less than that of New York. Again, There seems to be missing dates in both data sets, which can be attributed to data recording policies or fewer deaths
+```{r visuals_AZvNY_deaths}
+ggplot(data=AZvsNY,aes(x=date,y=new_deaths)) +
+  geom_bar(stat="identity") +
+  facet_wrap("Province_State") +
+  labs(title="Comparing New Cases in Arizona vs New York")
+```
+
+Now, we compare the cases in Arizona versus the cases in New York as a proportion of the state population to see if they correlate at all. In this section, a linear model is created to explore the relationship between cases as a proportion of population over time for Arizona and New York. We can see from the result that it is highly correlated with an R-squared of 0.98. 
+```{r visuals_AZvNY_case_basis}
+AZ <- AZvsNY %>% filter(Province_State=="Arizona") %>% mutate(basis = cases/Population)
+NY <- AZvsNY %>% filter(Province_State=="New York")  %>% mutate(basis = cases/Population)
+
+newAZvsNY <- merge(AZ, NY, by = "date") 
+mod <- lm(basis.x ~ basis.y, data = newAZvsNY)
+summary(mod)
+
+preds <- newAZvsNY %>% mutate(pred = predict(mod))
+
+preds %>%
+ggplot() + geom_point(aes(x = basis.x, y = basis.y, color = "Raw Data")) + 
+  geom_line(aes(x = basis.x, y = pred, color = "Prediciton")) + 
+  labs(title = "Correlation COVID-19 Cases on Population Basis: NY vs AZ") +
+labs(y = "NY Daily Cases/Population", x = "AZ Daily Cases/Population", color = "Legend")
+
+```
+
+
+## Bias
+The analysis conducted in this report is not without bias as every source of data is biased in some way. When looking at any results from this report we should consider that each state is different in many ways, including population and health policy, and so the COVID-19 virus affected each state different. Additionally, this report is only concerned with data from a few locations. Conducting analysis across global data would be wise if your goal is to make claims about the global effects of the pandemic.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r import_shooting_data, include=FALSE}
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD" 
+raw_data_shootings <- read_csv(url, show_col_types = FALSE)
+
+data_shootings <- raw_data_shootings %>% select(OCCUR_DATE, BORO) %>% drop_na()
+data_shootings$OCCUR_DATE <- mdy(data_shootings$OCCUR_DATE)
+data_shootings <- data_shootings %>% filter(OCCUR_DATE > "2018-12-30" & OCCUR_DATE < "2022-01-01")
+data_shootings <- data_shootings %>% group_by(OCCUR_DATE) %>% summarise(COUNT = n()) %>% ungroup()
+data_shootings <- data_shootings %>% mutate(new_shootings = COUNT-lag(COUNT))
+data_shootings <- data_shootings %>% rename(date = OCCUR_DATE)
+
+
+NY_shootings <- data_shootings[-1,]
+
+NY_covid <- US_by_state %>% filter(Province_State=="New York") %>% filter(cases>0,date>"2018-12-30"&date<"2022-01-01")
+NY_covid <- NY_covid %>% select(date,new_cases)
+```
+
+``` {r modeling_and_being_extra, include=FALSE}
+both_data <- merge(NY_shootings, NY_covid, by = "date") 
+mod <- lm(new_shootings ~ new_cases, data = both_data)
+summary(mod)
+
+preds <- both_data %>% mutate(pred = predict(mod))
+
+preds %>%
+ggplot() + geom_point(aes(x = new_shootings, y = new_cases,color = "Raw Data")) + 
+  geom_line(aes(x = new_shootings, y = pred, color = "Prediciton")) + 
+  scale_x_continuous(breaks = pretty(NY_shootings$date, n = 10)) + 
+  labs(title = "Correlation between Yearly Shootings % Change in the Bronx and Staten Island") +
+labs(y = "Staten Island Yearly Shooting % Change", x = "Bronx Yearly Shooting % Change", color = "Legend")
+
+```
